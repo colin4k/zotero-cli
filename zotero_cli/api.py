@@ -78,19 +78,23 @@ class ZoteroAPI:
 
     def check(self) -> dict:
         """诊断检查，返回用户信息、权限、库统计"""
-        # 获取 key 权限
-        key_info, _ = self._request("GET", f"keys/{self.api_key[:10]}")
-        user_access = key_info.get("access", {}).get("user", {}).get("library", {})
+        # 验证当前 key
+        key_info, _ = self._request("GET", "keys/current")
+        user_access = key_info.get("access", {}).get("user", {})
+        username = key_info.get("username", "")
 
         # 获取库统计
         _, items_headers = self._request("GET", "items?limit=1")
         _, coll_headers = self._request("GET", "collections?limit=1")
 
         return {
-            "user_id": self.user_id,
+            "user_id": key_info.get("userID", self.user_id),
+            "username": username,
             "api_key_prefix": self.api_key[:8] + "..." + self.api_key[-4:],
-            "library_read": user_access.get("read", False),
-            "library_write": user_access.get("write", False),
+            "library_access": user_access.get("library", False),
+            "file_access": user_access.get("files", False),
+            "note_access": user_access.get("notes", False),
+            "write_access": user_access.get("write", False),
             "total_items": items_headers.get("Total-Results", "?"),
             "total_collections": coll_headers.get("Total-Results", "?"),
             "library_version": items_headers.get("Last-Modified-Version", "?"),
@@ -128,7 +132,7 @@ class ZoteroAPI:
 
     def list_collections(self) -> list:
         """列出所有集合"""
-        items, _ = self._request("GET", "collections?limit=200&sort=name&direction=asc")
+        items, _ = self._request("GET", "collections?limit=200")
         return items
 
     def get_recent_items(self, limit: int = 10) -> list:
@@ -162,10 +166,11 @@ class ZoteroAPI:
             "Zotero-Write-Token": os.urandom(16).hex(),
         }
         result, _ = self._request("POST", "collections",
-                                  data=[{"name": name, "type": "collection", "key": "NEW"}],
+                                  data=[{"name": name}],
                                   headers=headers)
         if result.get("successful", {}).get("0"):
-            return result["successful"]["0"]
+            coll_data = result["successful"]["0"]
+            return coll_data.get("key") if isinstance(coll_data, dict) else coll_data
         raise ZoteroAPIError(0, f"创建集合失败: {result}")
 
     def upload_file(self, file_path: str, title: Optional[str] = None,
@@ -218,7 +223,8 @@ class ZoteroAPI:
         result, _ = self._request("POST", "items", data=[item], headers=headers)
         if not result.get("successful", {}).get("0"):
             raise ZoteroAPIError(0, f"创建条目失败: {result}")
-        item_key = result["successful"]["0"]
+        item_data = result["successful"]["0"]
+        item_key = item_data.get("key") if isinstance(item_data, dict) else item_data
 
         # Step 2: 获取上传授权
         auth_data = urllib.parse.urlencode({
@@ -241,6 +247,47 @@ class ZoteroAPI:
             raise ZoteroAPIError(e.code, f"上传授权失败: {body}") from e
 
         if auth_result.get("exists") == 1:
+            # 文件已存在，但仍需关联集合和笔记
+            if collection:
+                coll_key = self.ensure_collection(collection)
+                version = self.get_library_version()
+                item_data, _ = self._request("GET", f"items/{item_key}")
+                current_colls = item_data.get("data", {}).get("collections", [])
+                if coll_key not in current_colls:
+                    current_colls.append(coll_key)
+                item_update = {
+                    "key": item_key,
+                    "version": item_data.get("data", {}).get("version", 0),
+                    "collections": current_colls,
+                }
+                headers = {
+                    "If-Unmodified-Since-Version": str(version),
+                    "Zotero-Write-Token": os.urandom(16).hex(),
+                }
+                self._request("POST", "items", data=[item_update], headers=headers)
+
+            if note:
+                version = self.get_library_version()
+                # 检查父条目类型，attachment 不能有子笔记
+                parent_data, _ = self._request("GET", f"items/{item_key}")
+                parent_type = parent_data.get("data", {}).get("itemType", "")
+                
+                if parent_type in ("attachment", "note"):
+                    # attachment 的笔记直接存为独立条目
+                    note_item = {
+                        "itemType": "note",
+                        "note": f"<p>{note}</p>",
+                        "tags": [{"tag": "auto-note", "type": 1}],
+                    }
+                else:
+                    note_item = {
+                        "itemType": "note",
+                        "note": f"<p>{note}</p>",
+                        "parentItem": item_key,
+                    }
+                self._request("POST", "items", data=[note_item],
+                             headers={"If-Unmodified-Since-Version": str(version)})
+
             return {"key": item_key, "status": "exists", "title": item_title, "filename": filename}
 
         upload_url = auth_result["url"]
@@ -254,7 +301,7 @@ class ZoteroAPI:
         upload_body = prefix.encode() + file_content + suffix.encode()
 
         req = urllib.request.Request(upload_url, data=upload_body, method="POST")
-        req.add_header("Content-Type", content_type)
+        req.add_header("Content-Type", auth_result.get("contentType", content_type))
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 pass
@@ -281,17 +328,39 @@ class ZoteroAPI:
         if collection:
             coll_key = self.ensure_collection(collection)
             version = self.get_library_version()
-            self._request("POST", f"collections/{coll_key}/items",
-                         data=[item_key],
-                         headers={"If-Unmodified-Since-Version": str(version)})
+            # 更新条目的 collections 字段
+            item_data, _ = self._request("GET", f"items/{item_key}")
+            current_colls = item_data.get("data", {}).get("collections", [])
+            if coll_key not in current_colls:
+                current_colls.append(coll_key)
+            item_update = {
+                "key": item_key,
+                "version": item_data.get("data", {}).get("version", 0),
+                "collections": current_colls,
+            }
+            headers = {
+                "If-Unmodified-Since-Version": str(version),
+                "Zotero-Write-Token": os.urandom(16).hex(),
+            }
+            self._request("POST", "items", data=[item_update], headers=headers)
 
         # Step 6: 添加笔记
         if note:
             version = self.get_library_version()
-            note_item = {
-                "itemType": "note", "note": f"<p>{note}</p>",
-                "parentItem": item_key, "key": "NEW", "version": 0,
-            }
+            parent_type = item.get("itemType", "attachment")
+            
+            if parent_type in ("attachment", "note"):
+                note_item = {
+                    "itemType": "note",
+                    "note": f"<p>{note}</p>",
+                    "tags": [{"tag": "auto-note", "type": 1}],
+                }
+            else:
+                note_item = {
+                    "itemType": "note",
+                    "note": f"<p>{note}</p>",
+                    "parentItem": item_key,
+                }
             self._request("POST", "items", data=[note_item],
                          headers={"If-Unmodified-Since-Version": str(version)})
 

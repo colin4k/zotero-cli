@@ -80,11 +80,11 @@ def cmd_check(args, api: ZoteroAPI):
     print("=" * 50)
     print(f"\n1️⃣  用户: {info['user_id']}")
     print(f"2️⃣  API Key: {info['api_key_prefix']}")
-    print(f"3️⃣  权限: 读={info['library_read']}, 写={info['library_write']}")
+    print(f"3️⃣  权限: 库={info['library_access']}, 文件={info['file_access']}, 笔记={info['note_access']}, 写入={info['write_access']}")
     print(f"4️⃣  库统计: {info['total_items']} 条目, {info['total_collections']} 集合")
     print(f"5️⃣  库版本: {info['library_version']}")
     print("\n" + "=" * 50)
-    if info['library_read'] and info['library_write']:
+    if info['library_access'] and info['write_access']:
         print("✅ 一切正常")
     else:
         print("⚠️  权限不完整，请在 zotero.org 修改 API Key 权限")
@@ -95,8 +95,7 @@ def cmd_library(args, api: ZoteroAPI):
     """库概览"""
     check = api.check()
     collections = api.list_collections()
-    recent = api.get_recent_items(10)
-    attachments = api.get_attachments_sample(200)
+    recent = api.get_recent_items(5)
 
     print("=" * 50)
     print("📚 Zotero 库概览")
@@ -104,20 +103,13 @@ def cmd_library(args, api: ZoteroAPI):
     print(f"\n📄 总条目: {check['total_items']}")
     print(f"📁 集合: {len(collections)}")
 
-    print(f"\n📁 集合列表:")
+    print(f"\n📁 集合列表 (前 30 个):")
     if collections:
-        # 计算每个集合的条目数
-        for c in collections[:50]:
+        for c in collections[:30]:
             name = c["data"]["name"]
-            key = c["data"]["key"]
             parent = c["data"].get("parentCollection", False)
             parent_info = " (子集合)" if parent else ""
-            try:
-                items, _ = api._request("GET", f"collections/{key}/items?limit=1")
-                count = len(items)
-            except:
-                count = "?"
-            print(f"  📂 {name}{parent_info} — {count}")
+            print(f"  📂 {name}{parent_info}")
         if len(collections) > 50:
             print(f"  ... +{len(collections) - 50} 个集合")
     else:
@@ -135,6 +127,7 @@ def cmd_library(args, api: ZoteroAPI):
 
     # 文件类型统计
     ext_count = {}
+    attachments = api.get_attachments_sample(100)
     for a in attachments:
         fn = a.get("data", {}).get("filename", "")
         if not fn:
@@ -142,7 +135,7 @@ def cmd_library(args, api: ZoteroAPI):
         ext = "." + fn.rsplit(".", 1)[-1].lower()
         ext_count[ext] = ext_count.get(ext, 0) + 1
     if ext_count:
-        print(f"\n📊 附件类型 (样本):")
+        print(f"\n📊 附件类型 (样本 100 个):")
         for ext, count in sorted(ext_count.items(), key=lambda x: -x[1]):
             print(f"  {ext}: {count}")
     print(f"\n{'=' * 50}")
