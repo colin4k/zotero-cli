@@ -1,6 +1,9 @@
 # zotero-cli
 
-Zotero Web API 命令行工具，通过 Python stdlib 实现完整的文献库管理。
+[![PyPI version](https://img.shields.io/badge/pip%20install-zotero--cli-blue)](https://github.com/colin4k/zotero-cli)
+![Python 3.8+](https://img.shields.io/badge/python-3.8+-green.svg)
+
+Zotero Web API 命令行工具，通过 Python stdlib 实现完整的文献库管理（零外部依赖）。
 
 ## 安装
 
