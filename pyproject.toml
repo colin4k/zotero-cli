@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zotero-cli"
+version = "0.1.0"
+description = "Zotero Web API CLI - 完整的文献库管理工具"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.scripts]
+zotero = "zotero_cli.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["zotero_cli*"]
